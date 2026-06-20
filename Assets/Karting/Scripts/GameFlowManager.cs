@@ -35,6 +35,10 @@ public class GameFlowManager : MonoBehaviour
     [Tooltip("Prefab for the lose game message")]
     public DisplayMessage loseDisplayMessage;
 
+    [Header("Race Finish")]
+    [Tooltip("If enabled, completing objectives is not enough to win. The player must also cross the finish trigger.")]
+    public bool requirePlayerFinishToWin;
+
 
     public GameState gameState { get; private set; }
 
@@ -139,7 +143,7 @@ public class GameFlowManager : MonoBehaviour
         }
         else
         {
-            if (m_ObjectiveManager.AreAllObjectivesCompleted())
+            if (!requirePlayerFinishToWin && m_ObjectiveManager.AreAllObjectivesCompleted())
                 EndGame(true);
 
             if (m_TimeManager.IsFinite && m_TimeManager.IsOver)
@@ -147,7 +151,16 @@ public class GameFlowManager : MonoBehaviour
         }
     }
 
-    void EndGame(bool win)
+    public void NotifyPlayerReachedFinish()
+    {
+        if (gameState != GameState.Play)
+            return;
+
+        if (m_ObjectiveManager.AreAllObjectivesCompleted())
+            EndGame(true);
+    }
+
+    public void EndGame(bool win)
     {
         // unlocks the cursor before leaving the scene, to be able to click buttons
         Cursor.lockState = CursorLockMode.None;

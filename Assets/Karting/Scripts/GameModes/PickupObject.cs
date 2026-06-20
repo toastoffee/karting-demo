@@ -22,6 +22,8 @@ public class PickupObject : TargetObject
 
     void OnCollect()
     {
+        active = false;
+
         if (CollectSound)
         {
             AudioUtility.CreateSFX(CollectSound, transform.position, AudioUtility.AudioGroups.Pickup, 0f);
@@ -42,7 +44,10 @@ public class PickupObject : TargetObject
     
     void OnTriggerEnter(Collider other)
     {
-        if ((layerMask.value & 1 << other.gameObject.layer) > 0 && other.gameObject.CompareTag("Player"))
+        if (!active)
+            return;
+
+        if ((layerMask.value & 1 << other.gameObject.layer) > 0 && PlayerVehicleUtility.IsPlayerVehicle(other))
         {
             OnCollect();
         }

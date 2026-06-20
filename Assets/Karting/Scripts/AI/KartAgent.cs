@@ -71,6 +71,15 @@ namespace KartGame.AI
         public float SpeedReward;
         [Tooltip("Reward the agent when it keeps accelerating")]
         public float AccelerationReward;
+        [Space]
+        [Tooltip("Small reward for attempting drift input while carrying speed into a corner.")]
+        public float DriftInputReward = 0.004f;
+        [Tooltip("Reward applied while the kart sustains a useful drift towards the next checkpoint.")]
+        public float DriftMaintainReward = 0.008f;
+        [Tooltip("Bonus reward when a drift exits into a turbo boost.")]
+        public float DriftTurboReward = 0.25f;
+        [Tooltip("Lateral speed at which the drift reward reaches full strength.")]
+        public float DriftLateralSpeedRewardThreshold = 3.0f;
         #endregion
 
         #region ResetParams
@@ -96,6 +105,7 @@ namespace KartGame.AI
 
         bool m_EndEpisode;
         float m_LastAccumulatedReward;
+        bool m_PreviousDriftTurboActive;
 
         void Awake()
         {
@@ -135,12 +145,15 @@ namespace KartGame.AI
                         && ((1 << hit.collider.gameObject.layer) & OutOfBoundsMask) > 0)
                     {
                         // Reset the agent back to its last known agent checkpoint
-                        var checkpoint = Colliders[m_CheckpointIndex].transform;
+                        if (!TryGetCheckpoint(m_CheckpointIndex, out var checkpointCollider))
+                            break;
+
+                        var checkpoint = checkpointCollider.transform;
                         transform.localRotation = checkpoint.rotation;
                         transform.position = checkpoint.position;
                         m_Kart.Rigidbody.velocity = default;
                         m_Steering = 0f;
-						m_Acceleration = m_Brake = false; 
+                        m_Acceleration = m_Brake = false;
                     }
 
                     break;
@@ -152,10 +165,13 @@ namespace KartGame.AI
             var maskedValue = 1 << other.gameObject.layer;
             var triggered = maskedValue & CheckpointMask;
 
+            if (triggered <= 0 || !HasCheckpointRoute())
+                return;
+
             FindCheckpointIndex(other, out var index);
 
             // Ensure that the agent touched the checkpoint and the new index is greater than the m_CheckpointIndex.
-            if (triggered > 0 && index > m_CheckpointIndex || index == 0 && m_CheckpointIndex == Colliders.Length - 1)
+            if ((index > m_CheckpointIndex) || (index == 0 && m_CheckpointIndex == Colliders.Length - 1))
             {
                 AddReward(PassCheckpointReward);
                 m_CheckpointIndex = index;
@@ -166,13 +182,59 @@ namespace KartGame.AI
         {
             for (int i = 0; i < Colliders.Length; i++)
             {
-                if (Colliders[i].GetInstanceID() == checkPoint.GetInstanceID())
+                if (Colliders[i] != null && Colliders[i].GetInstanceID() == checkPoint.GetInstanceID())
                 {
                     index = i;
                     return;
                 }
             }
             index = -1;
+        }
+
+        bool HasCheckpointRoute()
+        {
+            if (Colliders == null || Colliders.Length == 0)
+                return false;
+
+            for (int i = 0; i < Colliders.Length; i++)
+            {
+                if (Colliders[i] != null)
+                    return true;
+            }
+
+            return false;
+        }
+
+        bool TryGetCheckpoint(int index, out Collider checkpoint)
+        {
+            checkpoint = null;
+
+            if (Colliders == null || index < 0 || index >= Colliders.Length)
+                return false;
+
+            checkpoint = Colliders[index];
+            return checkpoint != null;
+        }
+
+        bool TryGetNextCheckpoint(out Collider checkpoint, out int index)
+        {
+            checkpoint = null;
+            index = -1;
+
+            if (!HasCheckpointRoute())
+                return false;
+
+            for (int offset = 1; offset <= Colliders.Length; offset++)
+            {
+                var candidateIndex = (m_CheckpointIndex + offset) % Colliders.Length;
+                if (TryGetCheckpoint(candidateIndex, out checkpoint))
+                {
+                    index = candidateIndex;
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         float Sign(float value)
@@ -193,15 +255,21 @@ namespace KartGame.AI
             sensor.AddObservation(m_Kart.LocalSpeed());
 
             // Add an observation for direction of the agent to the next checkpoint.
-            var next = (m_CheckpointIndex + 1) % Colliders.Length;
-            var nextCollider = Colliders[next];
-            if (nextCollider == null)
-                return;
+            var hasNextCheckpoint = TryGetNextCheckpoint(out var nextCollider, out _);
+            var direction = hasNextCheckpoint
+                ? (nextCollider.transform.position - m_Kart.transform.position).normalized
+                : m_Kart.transform.forward;
+            sensor.AddObservation(hasNextCheckpoint ? Vector3.Dot(m_Kart.Rigidbody.velocity.normalized, direction) : 0f);
+            var localVelocity = m_Kart.transform.InverseTransformDirection(m_Kart.Rigidbody.velocity);
+            sensor.AddObservation(Mathf.Clamp(localVelocity.x / Mathf.Max(m_Kart.GetMaxSpeed(), 0.001f), -1.0f, 1.0f));
+            sensor.AddObservation(m_Steering);
+            sensor.AddObservation(m_Acceleration);
+            sensor.AddObservation(m_Brake);
+            sensor.AddObservation(m_Kart.IsDrifting);
+            sensor.AddObservation(m_Kart.HasActiveDriftTurbo);
+            sensor.AddObservation(Mathf.Clamp01(m_Kart.DriftElapsedTime / Mathf.Max(m_Kart.DriftTurboDuration, 0.001f)));
 
-            var direction = (nextCollider.transform.position - m_Kart.transform.position).normalized;
-            sensor.AddObservation(Vector3.Dot(m_Kart.Rigidbody.velocity.normalized, direction));
-
-            if (ShowRaycasts)
+            if (ShowRaycasts && hasNextCheckpoint)
                 Debug.DrawLine(AgentSensorTransform.position, nextCollider.transform.position, Color.magenta);
 
             m_LastAccumulatedReward = 0.0f;
@@ -237,7 +305,6 @@ namespace KartGame.AI
                 sensor.AddObservation(hit ? hitInfo.distance : current.RayDistance);
             }
 
-            sensor.AddObservation(m_Acceleration);
         }
 
         public override void OnActionReceived(ActionBuffers actions)
@@ -246,8 +313,12 @@ namespace KartGame.AI
             InterpretDiscreteActions(actions);
 
             // Find the next checkpoint when registering the current checkpoint that the agent has passed.
-            var next = (m_CheckpointIndex + 1) % Colliders.Length;
-            var nextCollider = Colliders[next];
+            if (!TryGetNextCheckpoint(out var nextCollider, out _))
+            {
+                m_PreviousDriftTurboActive = m_Kart.HasActiveDriftTurbo;
+                return;
+            }
+
             var direction = (nextCollider.transform.position - m_Kart.transform.position).normalized;
             var reward = Vector3.Dot(m_Kart.Rigidbody.velocity.normalized, direction);
 
@@ -257,6 +328,21 @@ namespace KartGame.AI
             AddReward(reward * TowardsCheckpointReward);
             AddReward((m_Acceleration && !m_Brake ? 1.0f : 0.0f) * AccelerationReward);
             AddReward(m_Kart.LocalSpeed() * SpeedReward);
+
+            var localVelocity = m_Kart.transform.InverseTransformDirection(m_Kart.Rigidbody.velocity);
+            var driftHeading = Mathf.Clamp01((reward + 1.0f) * 0.5f);
+            var lateralDriftFactor = Mathf.Clamp01(Mathf.Abs(localVelocity.x) / Mathf.Max(DriftLateralSpeedRewardThreshold, 0.001f));
+
+            if (m_Brake && Mathf.Abs(m_Steering) > 0.01f && m_Kart.LocalSpeed() > 0.2f)
+                AddReward(DriftInputReward * driftHeading);
+
+            if (m_Kart.IsDrifting)
+                AddReward(DriftMaintainReward * driftHeading * lateralDriftFactor);
+
+            if (!m_PreviousDriftTurboActive && m_Kart.HasActiveDriftTurbo)
+                AddReward(DriftTurboReward);
+
+            m_PreviousDriftTurboActive = m_Kart.HasActiveDriftTurbo;
         }
 
         public override void OnEpisodeBegin()
@@ -264,14 +350,20 @@ namespace KartGame.AI
             switch (Mode)
             {
                 case AgentMode.Training:
+                    if (!HasCheckpointRoute())
+                        break;
+
                     m_CheckpointIndex = Random.Range(0, Colliders.Length - 1);
-                    var collider = Colliders[m_CheckpointIndex];
+                    if (!TryGetCheckpoint(m_CheckpointIndex, out var collider))
+                        break;
+
                     transform.localRotation = collider.transform.rotation;
                     transform.position = collider.transform.position;
                     m_Kart.Rigidbody.velocity = default;
                     m_Acceleration = false;
                     m_Brake = false;
                     m_Steering = 0f;
+                    m_PreviousDriftTurboActive = false;
                     break;
                 default:
                     break;
@@ -282,7 +374,7 @@ namespace KartGame.AI
         {
             m_Steering = actions.DiscreteActions[0] - 1f;
             m_Acceleration = actions.DiscreteActions[1] >= 1.0f;
-            m_Brake = actions.DiscreteActions[1] < 1.0f;
+            m_Brake = actions.DiscreteActions[2] >= 1.0f;
         }
 
         public InputData GenerateInput()

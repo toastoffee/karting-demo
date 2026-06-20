@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3a5c9d521e5ef4759a8246a07d52221e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  DecisionPeriod: 5
+  DecisionPeriod: 3
   TakeActionsBetweenDecisions: 1
 --- !u!114 &6521773912976216144
 MonoBehaviour:
@@ -30,7 +30,7 @@ MonoBehaviour:
     maxStep: 5000
   hasUpgradedFromAgentParameters: 1
   MaxStep: 5000
-  Mode: 1
+  Mode: 0
   InitCheckpointIndex: 0
   Mask:
     serializedVersion: 2
@@ -73,6 +73,10 @@ MonoBehaviour:
   TowardsCheckpointReward: 0.03
   SpeedReward: 0.02
   AccelerationReward: 0
+  DriftInputReward: 0.004
+  DriftMaintainReward: 0.008
+  DriftTurboReward: 0.25
+  DriftLateralSpeedRewardThreshold: 3
   OutOfBoundsMask:
     serializedVersion: 2
     m_Bits: 512
@@ -94,12 +98,12 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   m_BrainParameters:
-    VectorObservationSize: 12
+    VectorObservationSize: 18
     NumStackedVectorObservations: 4
-    VectorActionSize: 0300000003000000
+    VectorActionSize: 030000000200000002000000
     VectorActionDescriptions: []
     VectorActionSpaceType: 0
-  m_Model: {fileID: 5022602860645237092, guid: 90f46a43ed0f2f548a60958c3c237264, type: 3}
+  m_Model: {fileID: 0}
   m_InferenceDevice: 0
   m_BehaviorType: 0
   m_BehaviorName: ArcadeDriver

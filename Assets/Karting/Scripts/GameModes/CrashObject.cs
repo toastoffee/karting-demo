@@ -41,7 +41,7 @@ public class CrashObject : TargetObject
     {
         if (!active) return;
         
-        if ((layerMask.value & 1 << other.gameObject.layer) > 0 && other.gameObject.CompareTag("Player"))
+        if ((layerMask.value & 1 << other.gameObject.layer) > 0 && PlayerVehicleUtility.IsPlayerVehicle(other))
             OnCollect(other);
     }
     

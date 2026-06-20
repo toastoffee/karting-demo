@@ -91,6 +91,20 @@ namespace KartGame.KartSystems
         public InputData Input     { get; private set; }
         public float AirPercent    { get; private set; }
         public float GroundPercent { get; private set; }
+        public float DriftElapsedTime => m_DriftElapsedTime;
+        public bool HasActiveDriftTurbo
+        {
+            get
+            {
+                for (int i = 0; i < m_ActivePowerupList.Count; i++)
+                {
+                    if (m_ActivePowerupList[i].PowerUpID == "drift_turbo")
+                        return true;
+                }
+
+                return false;
+            }
+        }
 
         public ArcadeKart.Stats baseStats = new ArcadeKart.Stats
         {
@@ -390,9 +404,15 @@ namespace KartGame.KartSystems
             Input = new InputData();
             WantsToDrift = false;
 
+            if (m_Inputs == null || m_Inputs.Length == 0)
+                m_Inputs = GetComponents<IInput>();
+
             // gather nonzero input from our sources
             for (int i = 0; i < m_Inputs.Length; i++)
             {
+                if (m_Inputs[i] == null)
+                    continue;
+
                 Input = m_Inputs[i].GenerateInput();
                 WantsToDrift = Input.Brake && Vector3.Dot(Rigidbody.velocity, transform.forward) > 0.0f;
             }

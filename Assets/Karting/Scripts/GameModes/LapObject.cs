@@ -23,7 +23,7 @@ public class LapObject : TargetObject
 
     private void OnTriggerEnter(Collider other)
     {
-        if (!((layerMask.value & 1 << other.gameObject.layer) > 0 && other.CompareTag("Player")))
+        if (!((layerMask.value & 1 << other.gameObject.layer) > 0 && PlayerVehicleUtility.IsPlayerVehicle(other)))
             return;
        
         Objective.OnUnregisterPickup?.Invoke(this);
