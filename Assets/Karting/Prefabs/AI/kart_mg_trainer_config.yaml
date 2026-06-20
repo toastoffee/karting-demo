@@ -19,7 +19,7 @@ default_settings:
       gamma: 0.99
       strength: 1.0
   keep_checkpoints: 5
-  checkpoint_interval: 500000
+  checkpoint_interval: 50000
   max_steps: 5.0e10
   time_horizon: 64
   summary_freq: 1000
@@ -47,7 +47,7 @@ behaviors:
         gamma: 0.99
         strength: 1.0
     keep_checkpoints: 5
-    checkpoint_interval: 500000
+    checkpoint_interval: 50000
     max_steps: 2.5e7
     time_horizon: 128
     summary_freq: 2000

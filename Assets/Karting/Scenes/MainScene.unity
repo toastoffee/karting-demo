@@ -2398,7 +2398,7 @@ MonoBehaviour:
     Acceleration: 0
     ReverseSpeed: 0
     ReverseAcceleration: 0
-    AccelerationCurve: 0
+    AccelerationCurve: 0.2
     Braking: 0
     CoastingDrag: 0
     Grip: 0
@@ -2427,7 +2427,7 @@ MonoBehaviour:
   RearRightWheel: {fileID: 1169822194}
   GroundLayers:
     serializedVersion: 2
-    m_Bits: 4294967291
+    m_Bits: 32563
   FrontAxleWeightBias: 0.52
   BrakeBiasFront: 0.58
   TireMaxSteerAngle: 14
@@ -11830,6 +11830,16 @@ PrefabInstance:
         type: 3}
       propertyPath: m_LocalEulerAnglesHint.z
       value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 5209091469959198658, guid: 5f7c5784d4776074089b56351be94b74,
+        type: 3}
+      propertyPath: GroundLayers.m_Bits
+      value: 32563
+      objectReference: {fileID: 0}
+    - target: {fileID: 5209091469959198658, guid: 5f7c5784d4776074089b56351be94b74,
+        type: 3}
+      propertyPath: DriftTurboStats.AccelerationCurve
+      value: 0.2
       objectReference: {fileID: 0}
     - target: {fileID: 5209091469959198659, guid: 5f7c5784d4776074089b56351be94b74,
         type: 3}

@@ -1,0 +1,47 @@
+{
+    "name": "root",
+    "metadata": {
+        "timer_format_version": "0.1.0",
+        "start_time_seconds": "1781959179",
+        "python_version": "3.8.18 (default, Sep 11 2023, 08:17:16) \n[Clang 14.0.6 ]",
+        "command_line_arguments": "/Users/toastoffee/anaconda3/envs/lotteryPt/bin/mlagents-learn Assets/Karting/Prefabs/AI/kart_mg_trainer_config.yaml --run-id=arcade_drift_headless_cpu --env=Builds/KartTraining.app --no-graphics --torch-device=mps",
+        "mlagents_version": "0.26.0",
+        "mlagents_envs_version": "0.26.0",
+        "communication_protocol_version": "1.5.0",
+        "pytorch_version": "2.1.0.post100",
+        "numpy_version": "1.23.5",
+        "end_time_seconds": "1781959180"
+    },
+    "total": 0.96323625,
+    "count": 1,
+    "self": 0.008205708999999839,
+    "children": {
+        "run_training.setup": {
+            "total": 0.03229833299999996,
+            "count": 1,
+            "self": 0.03229833299999996
+        },
+        "TrainerController.start_learning": {
+            "total": 0.9227322080000002,
+            "count": 1,
+            "self": 0.0003383330000001905,
+            "children": {
+                "TrainerController._reset_env": {
+                    "total": 0.9223872499999999,
+                    "count": 1,
+                    "self": 0.9223872499999999
+                },
+                "trainer_threads": {
+                    "total": 5.830000002760016e-07,
+                    "count": 1,
+                    "self": 5.830000002760016e-07
+                },
+                "TrainerController._save_models": {
+                    "total": 6.041999999872871e-06,
+                    "count": 1,
+                    "self": 6.041999999872871e-06
+                }
+            }
+        }
+    }
+}

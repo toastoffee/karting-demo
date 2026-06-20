@@ -1,0 +1,65 @@
+{
+    "ArcadeDriver": {
+        "checkpoints": [
+            {
+                "steps": 849969,
+                "file_path": "results/arcade_editor_retrain_v2/ArcadeDriver/ArcadeDriver-849969.onnx",
+                "reward": 263.3000539124012,
+                "creation_time": 1781968618.789883,
+                "auxillary_file_paths": [
+                    "results/arcade_editor_retrain_v2/ArcadeDriver/ArcadeDriver-849969.pt"
+                ]
+            },
+            {
+                "steps": 899940,
+                "file_path": "results/arcade_editor_retrain_v2/ArcadeDriver/ArcadeDriver-899940.onnx",
+                "reward": 265.5585573965853,
+                "creation_time": 1781968952.8017359,
+                "auxillary_file_paths": [
+                    "results/arcade_editor_retrain_v2/ArcadeDriver/ArcadeDriver-899940.pt"
+                ]
+            },
+            {
+                "steps": 949940,
+                "file_path": "results/arcade_editor_retrain_v2/ArcadeDriver/ArcadeDriver-949940.onnx",
+                "reward": 267.0929863899946,
+                "creation_time": 1781969276.714231,
+                "auxillary_file_paths": [
+                    "results/arcade_editor_retrain_v2/ArcadeDriver/ArcadeDriver-949940.pt"
+                ]
+            },
+            {
+                "steps": 999940,
+                "file_path": "results/arcade_editor_retrain_v2/ArcadeDriver/ArcadeDriver-999940.onnx",
+                "reward": 267.3502128571272,
+                "creation_time": 1781969583.797251,
+                "auxillary_file_paths": [
+                    "results/arcade_editor_retrain_v2/ArcadeDriver/ArcadeDriver-999940.pt"
+                ]
+            },
+            {
+                "steps": 1032118,
+                "file_path": "results/arcade_editor_retrain_v2/ArcadeDriver/ArcadeDriver-1032118.onnx",
+                "reward": 267.5880549252033,
+                "creation_time": 1781969792.637753,
+                "auxillary_file_paths": [
+                    "results/arcade_editor_retrain_v2/ArcadeDriver/ArcadeDriver-1032118.pt"
+                ]
+            }
+        ],
+        "final_checkpoint": {
+            "steps": 1032118,
+            "file_path": "results/arcade_editor_retrain_v2/ArcadeDriver.onnx",
+            "reward": 267.5880549252033,
+            "creation_time": 1781969792.637753,
+            "auxillary_file_paths": [
+                "results/arcade_editor_retrain_v2/ArcadeDriver/ArcadeDriver-1032118.pt"
+            ]
+        }
+    },
+    "metadata": {
+        "stats_format_version": "0.3.0",
+        "mlagents_version": "0.26.0",
+        "torch_version": "2.1.0.post100"
+    }
+}
