@@ -71,6 +71,22 @@ namespace KartGame.KartSystems
             }
         }
 
+        [System.Serializable]
+        public struct PacejkaCoefficients
+        {
+            [Min(0.01f), Tooltip("Stiffness factor. Higher values make tire force build faster.")]
+            public float B;
+
+            [Min(0.01f), Tooltip("Shape factor. Controls the general shape of the force curve.")]
+            public float C;
+
+            [Min(0.01f), Tooltip("Peak factor. Controls the peak normalized tire force.")]
+            public float D;
+
+            [Range(-2.0f, 2.0f), Tooltip("Curvature factor. Adjusts the curve close to and past the peak.")]
+            public float E;
+        }
+
         public Rigidbody Rigidbody { get; private set; }
         public InputData Input     { get; private set; }
         public float AirPercent    { get; private set; }
@@ -153,6 +169,27 @@ namespace KartGame.KartSystems
 
         [Tooltip("Which layers the wheels will detect.")]
         public LayerMask GroundLayers = Physics.DefaultRaycastLayers;
+
+        [Header("Pacejka Tire Model")]
+        [Range(0.1f, 0.9f), Tooltip("Static load split applied to the front axle.")]
+        public float FrontAxleWeightBias = 0.52f;
+        [Range(0.1f, 0.9f), Tooltip("How much of the braking force is applied to the front axle.")]
+        public float BrakeBiasFront = 0.58f;
+        [Range(1.0f, 35.0f), Tooltip("Maximum steering angle used when computing front tire slip angle.")]
+        public float TireMaxSteerAngle = 14.0f;
+        [Range(1.0f, 45.0f), Tooltip("Maximum tire slip angle fed into the Pacejka lateral curve.")]
+        public float TireSlipAngleLimit = 18.0f;
+        [Range(0.05f, 3.0f), Tooltip("Maximum tire slip ratio fed into the Pacejka longitudinal curve.")]
+        public float TireSlipRatioLimit = 1.25f;
+        [Range(0.0f, 4.0f), Tooltip("How strongly longitudinal slip reduces lateral grip.")]
+        public float CombinedSlipInfluence = 1.0f;
+        [Range(0.0f, 20.0f), Tooltip("Extra damping used to settle residual sideways velocity.")]
+        public float TireLateralDamping = 4.0f;
+        [Range(0.0f, 10.0f), Tooltip("How quickly yaw rate settles when tire moment falls away.")]
+        public float TireYawDamping = 3.0f;
+        public PacejkaCoefficients LongitudinalPacejka = new PacejkaCoefficients { B = 9.5f, C = 1.55f, D = 1.10f, E = 0.97f };
+        public PacejkaCoefficients FrontLateralPacejka = new PacejkaCoefficients { B = 7.0f, C = 1.35f, D = 1.05f, E = 0.90f };
+        public PacejkaCoefficients RearLateralPacejka = new PacejkaCoefficients { B = 6.0f, C = 1.30f, D = 1.00f, E = 0.88f };
 
         // the input sources that can control the kart
         IInput[] m_Inputs;
@@ -371,6 +408,112 @@ namespace KartGame.KartSystems
             }
         }
 
+        float EvaluatePacejka(float slip, PacejkaCoefficients coefficients)
+        {
+            float scaledSlip = coefficients.B * slip;
+            float deformation = scaledSlip - (coefficients.E * (scaledSlip - Mathf.Atan(scaledSlip)));
+            return coefficients.D * Mathf.Sin(coefficients.C * Mathf.Atan(deformation));
+        }
+
+        float CalculateSlipRatio(float currentSpeed, float targetSpeed)
+        {
+            float referenceSpeed = Mathf.Max(Mathf.Abs(currentSpeed), Mathf.Abs(targetSpeed), 1.0f);
+            return (targetSpeed - currentSpeed) / referenceSpeed;
+        }
+
+        float GetCombinedSlipScale(float longitudinalSlip)
+        {
+            float normalizedSlip = longitudinalSlip / Mathf.Max(TireSlipRatioLimit, 0.001f);
+            return 1.0f / Mathf.Sqrt(1.0f + (CombinedSlipInfluence * normalizedSlip * normalizedSlip));
+        }
+
+        void GetAxleDistances(out float frontDistance, out float rearDistance)
+        {
+            Vector3 frontAxleCenter = (FrontLeftWheel.transform.position + FrontRightWheel.transform.position) * 0.5f;
+            Vector3 rearAxleCenter = (RearLeftWheel.transform.position + RearRightWheel.transform.position) * 0.5f;
+            Vector3 localFront = transform.InverseTransformPoint(frontAxleCenter);
+            Vector3 localRear = transform.InverseTransformPoint(rearAxleCenter);
+            Vector3 localCenterOfMass = transform.InverseTransformPoint(Rigidbody.worldCenterOfMass);
+
+            frontDistance = Mathf.Max(localFront.z - localCenterOfMass.z, 0.1f);
+            rearDistance = Mathf.Max(localCenterOfMass.z - localRear.z, 0.1f);
+        }
+
+        void ApplyPacejkaTireForces(float accelInput, bool accelDirectionIsFwd, bool isBraking, float turningPower, float finalAcceleration)
+        {
+            float dt = Time.fixedDeltaTime;
+            Vector3 planarVelocity = Vector3.ProjectOnPlane(Rigidbody.velocity, m_VerticalReference);
+            Vector3 verticalVelocity = Rigidbody.velocity - planarVelocity;
+            Vector3 localPlanarVelocity = transform.InverseTransformDirection(planarVelocity);
+
+            float forwardSpeed = localPlanarVelocity.z;
+            float lateralSpeed = localPlanarVelocity.x;
+            float forwardReference = Mathf.Max(Mathf.Abs(forwardSpeed), 0.5f);
+
+            GetAxleDistances(out float frontDistance, out float rearDistance);
+
+            float maxSteerRange = Mathf.Max(m_FinalStats.Steer + DriftAdditionalSteer, 0.001f);
+            float steerInputNormalized = Mathf.Clamp(turningPower / maxSteerRange, -1.0f, 1.0f);
+            float steerAngle = steerInputNormalized * TireMaxSteerAngle * Mathf.Deg2Rad;
+            float yawRate = Vector3.Dot(Rigidbody.angularVelocity, m_VerticalReference);
+
+            float slipAngleLimit = TireSlipAngleLimit * Mathf.Deg2Rad;
+            float frontSlipAngle = Mathf.Atan2(lateralSpeed + (frontDistance * yawRate), forwardReference) - steerAngle;
+            float rearSlipAngle = Mathf.Atan2(lateralSpeed - (rearDistance * yawRate), forwardReference);
+            frontSlipAngle = Mathf.Clamp(frontSlipAngle, -slipAngleLimit, slipAngleLimit);
+            rearSlipAngle = Mathf.Clamp(rearSlipAngle, -slipAngleLimit, slipAngleLimit);
+
+            float targetForwardSpeed = 0.0f;
+            if (!isBraking && Mathf.Abs(accelInput) >= k_NullInput)
+                targetForwardSpeed = accelDirectionIsFwd ? m_FinalStats.TopSpeed : -m_FinalStats.ReverseSpeed;
+
+            float driveSlipRatio = 0.0f;
+            if (!isBraking && Mathf.Abs(accelInput) >= k_NullInput)
+                driveSlipRatio = Mathf.Clamp(CalculateSlipRatio(forwardSpeed, targetForwardSpeed), -TireSlipRatioLimit, TireSlipRatioLimit);
+
+            float brakeSlipRatio = 0.0f;
+            if (isBraking)
+                brakeSlipRatio = Mathf.Clamp(CalculateSlipRatio(forwardSpeed, 0.0f), -TireSlipRatioLimit, TireSlipRatioLimit);
+
+            float totalLoad = Rigidbody.mass * Physics.gravity.magnitude * Mathf.Clamp01(GroundPercent);
+            float frontLoad = totalLoad * FrontAxleWeightBias;
+            float rearLoad = totalLoad - frontLoad;
+            float frontGrip = m_FinalStats.Grip;
+            float rearGrip = IsDrifting ? m_CurrentGrip : m_FinalStats.Grip;
+
+            float frontLongForce = isBraking
+                ? EvaluatePacejka(brakeSlipRatio, LongitudinalPacejka) * Rigidbody.mass * finalAcceleration * BrakeBiasFront
+                : 0.0f;
+            float rearLongForce = isBraking
+                ? EvaluatePacejka(brakeSlipRatio, LongitudinalPacejka) * Rigidbody.mass * finalAcceleration * (1.0f - BrakeBiasFront)
+                : EvaluatePacejka(driveSlipRatio, LongitudinalPacejka) * Rigidbody.mass * finalAcceleration;
+
+            float frontCombinedScale = GetCombinedSlipScale(isBraking ? brakeSlipRatio : 0.0f);
+            float rearCombinedScale = GetCombinedSlipScale(isBraking ? brakeSlipRatio : driveSlipRatio);
+
+            float frontLateralForce = EvaluatePacejka(-frontSlipAngle, FrontLateralPacejka) * frontLoad * frontGrip * frontCombinedScale;
+            float rearLateralForce = EvaluatePacejka(-rearSlipAngle, RearLateralPacejka) * rearLoad * rearGrip * rearCombinedScale;
+
+            localPlanarVelocity.z += ((frontLongForce + rearLongForce) / Mathf.Max(Rigidbody.mass, 0.01f)) * dt;
+            localPlanarVelocity.x += ((frontLateralForce + rearLateralForce) / Mathf.Max(Rigidbody.mass, 0.01f)) * dt;
+            localPlanarVelocity.x = Mathf.MoveTowards(localPlanarVelocity.x, 0.0f, TireLateralDamping * dt);
+
+            if (Mathf.Abs(accelInput) < k_NullInput && GroundPercent > 0.0f)
+                localPlanarVelocity.z = Mathf.MoveTowards(localPlanarVelocity.z, 0.0f, m_FinalStats.CoastingDrag * dt);
+
+            localPlanarVelocity.z = Mathf.Clamp(localPlanarVelocity.z, -m_FinalStats.ReverseSpeed, m_FinalStats.TopSpeed);
+            Rigidbody.velocity = transform.TransformDirection(localPlanarVelocity) + verticalVelocity;
+
+            float yawMoment = (frontLateralForce * frontDistance) - (rearLateralForce * rearDistance);
+            float yawInertia = Mathf.Max(Rigidbody.mass * (frontDistance + rearDistance) * (frontDistance + rearDistance) * 0.25f, 0.1f);
+            float nextYawRate = yawRate + ((yawMoment / yawInertia) * dt);
+            nextYawRate = Mathf.MoveTowards(nextYawRate, 0.0f, TireYawDamping * dt);
+
+            Vector3 angularVelocity = Rigidbody.angularVelocity;
+            Vector3 angularVelocityWithoutYaw = Vector3.ProjectOnPlane(angularVelocity, m_VerticalReference);
+            Rigidbody.angularVelocity = angularVelocityWithoutYaw + (m_VerticalReference * nextYawRate);
+        }
+
         public void Reset()
         {
             Vector3 euler = transform.rotation.eulerAngles;
@@ -440,37 +583,7 @@ namespace KartGame.KartSystems
             float finalAccelPower = isBraking ? m_FinalStats.Braking : accelPower;
 
             float finalAcceleration = finalAccelPower * accelRamp;
-
-            // apply inputs to forward/backward
             float turningPower = IsDrifting ? m_DriftTurningPower : turnInput * m_FinalStats.Steer;
-
-            Quaternion turnAngle = Quaternion.AngleAxis(turningPower, transform.up);
-            Vector3 fwd = turnAngle * transform.forward;
-            Vector3 movement = fwd * accelInput * finalAcceleration * ((m_HasCollision || GroundPercent > 0.0f) ? 1.0f : 0.0f);
-
-            // forward movement
-            bool wasOverMaxSpeed = currentSpeed >= maxSpeed;
-
-            // if over max speed, cannot accelerate faster.
-            if (wasOverMaxSpeed && !isBraking) 
-                movement *= 0.0f;
-
-            Vector3 newVelocity = Rigidbody.velocity + movement * Time.fixedDeltaTime;
-            newVelocity.y = Rigidbody.velocity.y;
-
-            //  clamp max speed if we are on ground
-            if (GroundPercent > 0.0f && !wasOverMaxSpeed)
-            {
-                newVelocity = Vector3.ClampMagnitude(newVelocity, maxSpeed);
-            }
-
-            // coasting is when we aren't touching accelerate
-            if (Mathf.Abs(accelInput) < k_NullInput && GroundPercent > 0.0f)
-            {
-                newVelocity = Vector3.MoveTowards(newVelocity, new Vector3(0, Rigidbody.velocity.y, 0), Time.fixedDeltaTime * m_FinalStats.CoastingDrag);
-            }
-
-            Rigidbody.velocity = newVelocity;
 
             // Drift
             if (GroundPercent > 0.0f)
@@ -480,26 +593,6 @@ namespace KartGame.KartSystems
                     m_InAir = false;
                     Instantiate(JumpVFX, transform.position, Quaternion.identity);
                 }
-
-                // manual angular velocity coefficient
-                float angularVelocitySteering = 0.4f;
-                float angularVelocitySmoothSpeed = 20f;
-
-                // turning is reversed if we're going in reverse and pressing reverse
-                if (!localVelDirectionIsFwd && !accelDirectionIsFwd) 
-                    angularVelocitySteering *= -1.0f;
-
-                var angularVel = Rigidbody.angularVelocity;
-
-                // move the Y angular velocity towards our target
-                angularVel.y = Mathf.MoveTowards(angularVel.y, turningPower * angularVelocitySteering, Time.fixedDeltaTime * angularVelocitySmoothSpeed);
-
-                // apply the angular velocity
-                Rigidbody.angularVelocity = angularVel;
-
-                // rotate rigidbody's velocity as well to generate immediate velocity redirection
-                // manual velocity steering coefficient
-                float velocitySteering = 25f;
 
                 // If the karts lands with a forward not in the velocity direction, we start the drift
                 if (GroundPercent >= 0.0f && m_PreviousGroundPercent < 0.1f)
@@ -512,6 +605,9 @@ namespace KartGame.KartSystems
                         m_DriftTurningPower = 0.0f;
                     }
                 }
+
+                if (!IsDrifting)
+                    m_CurrentGrip = m_FinalStats.Grip;
 
                 // Drift Management
                 if (!IsDrifting)
@@ -555,8 +651,8 @@ namespace KartGame.KartSystems
 
                 }
 
-                // rotate our velocity based on current steer value
-                Rigidbody.velocity = Quaternion.AngleAxis(turningPower * Mathf.Sign(localVel.z) * velocitySteering * m_CurrentGrip * Time.fixedDeltaTime, transform.up) * Rigidbody.velocity;
+                float tireTurningPower = IsDrifting ? m_DriftTurningPower : turnInput * m_FinalStats.Steer;
+                ApplyPacejkaTireForces(accelInput, accelDirectionIsFwd, isBraking, tireTurningPower, finalAcceleration);
             }
             else
             {
