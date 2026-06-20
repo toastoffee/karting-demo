@@ -152,7 +152,7 @@ PrefabInstance:
     - target: {fileID: 4895846115232909977, guid: cba6236a3ca88a54081cc989c4f0c08a,
         type: 3}
       propertyPath: DriftGrip
-      value: 0.85
+      value: 0.55
       objectReference: {fileID: 0}
     - target: {fileID: 4895846115232909977, guid: cba6236a3ca88a54081cc989c4f0c08a,
         type: 3}
@@ -207,7 +207,7 @@ PrefabInstance:
     - target: {fileID: 4895846115232909977, guid: cba6236a3ca88a54081cc989c4f0c08a,
         type: 3}
       propertyPath: DriftAdditionalSteer
-      value: 0
+      value: 2.5
       objectReference: {fileID: 0}
     - target: {fileID: 4895846115232909977, guid: cba6236a3ca88a54081cc989c4f0c08a,
         type: 3}
@@ -242,7 +242,7 @@ PrefabInstance:
     - target: {fileID: 4895846115232909977, guid: cba6236a3ca88a54081cc989c4f0c08a,
         type: 3}
       propertyPath: MinSpeedPercentToFinishDrift
-      value: 0.95
+      value: 0.45
       objectReference: {fileID: 0}
     - target: {fileID: 4895846115232909977, guid: cba6236a3ca88a54081cc989c4f0c08a,
         type: 3}

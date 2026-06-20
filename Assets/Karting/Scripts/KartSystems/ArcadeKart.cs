@@ -121,6 +121,10 @@ namespace KartGame.KartSystems
         public float DriftGrip = 0.4f;
         [Range(0.0f, 10.0f), Tooltip("Additional steer when the kart is drifting.")]
         public float DriftAdditionalSteer = 5.0f;
+        [Range(0.1f, 3.0f), Tooltip("Extra yaw response multiplier applied while drifting.")]
+        public float DriftYawResponseMultiplier = 1.35f;
+        [Range(0.1f, 2.0f), Tooltip("Extra front steering angle multiplier applied while drifting.")]
+        public float DriftSteerAngleMultiplier = 1.15f;
         [Range(1.0f, 30.0f), Tooltip("The higher the angle, the easier it is to regain full grip.")]
         public float MinAngleToFinishDrift = 10.0f;
         [Range(0.01f, 0.99f), Tooltip("Mininum speed percentage to switch back to full grip.")]
@@ -129,6 +133,18 @@ namespace KartGame.KartSystems
         public float DriftControl = 10.0f;
         [Range(0.0f, 20.0f), Tooltip("The lower the value, the longer the drift will last without trying to control it by steering.")]
         public float DriftDampening = 10.0f;
+        [Min(0.0f), Tooltip("How long a drift must last before it can reward a turbo boost on exit.")]
+        public float DriftTurboMinDuration = 0.75f;
+        [Tooltip("Short boost applied when a valid drift ends.")]
+        public Stats DriftTurboStats = new Stats
+        {
+            TopSpeed = 3.0f,
+            Acceleration = 6.0f,
+            ReverseAcceleration = 1.5f,
+            AccelerationCurve = 0.1f
+        };
+        [Min(0.0f), Tooltip("Duration of the turbo boost granted after a valid drift.")]
+        public float DriftTurboDuration = 1.25f;
 
         [Header("VFX")]
         [Tooltip("VFX that will be placed on the wheels when drifting.")]
@@ -203,6 +219,7 @@ namespace KartGame.KartSystems
         public bool IsDrifting { get; private set; } = false;
         float m_CurrentGrip = 1.0f;
         float m_DriftTurningPower = 0.0f;
+        float m_DriftElapsedTime = 0.0f;
         float m_PreviousGroundPercent = 1.0f;
         readonly List<(GameObject trailRoot, WheelCollider wheel, TrailRenderer trail)> m_DriftTrailInstances = new List<(GameObject, WheelCollider, TrailRenderer)>();
         readonly List<(WheelCollider wheel, float horizontalOffset, float rotation, ParticleSystem sparks)> m_DriftSparkInstances = new List<(WheelCollider, float, float, ParticleSystem)>();
@@ -218,7 +235,16 @@ namespace KartGame.KartSystems
         bool m_HasCollision;
         bool m_InAir = false;
 
-        public void AddPowerup(StatPowerup statPowerup) => m_ActivePowerupList.Add(statPowerup);
+        public void AddPowerup(StatPowerup statPowerup)
+        {
+            m_ActivePowerupList.Add(new StatPowerup
+            {
+                modifiers = statPowerup.modifiers,
+                PowerUpID = statPowerup.PowerUpID,
+                ElapsedTime = 0.0f,
+                MaxTime = statPowerup.MaxTime
+            });
+        }
         public void SetCanMove(bool move) => m_CanMove = move;
         public float GetMaxSpeed() => Mathf.Max(m_FinalStats.TopSpeed, m_FinalStats.ReverseSpeed);
 
@@ -427,6 +453,32 @@ namespace KartGame.KartSystems
             return 1.0f / Mathf.Sqrt(1.0f + (CombinedSlipInfluence * normalizedSlip * normalizedSlip));
         }
 
+        void BeginDrift(float turningPower)
+        {
+            IsDrifting = true;
+            m_CurrentGrip = DriftGrip;
+            m_DriftTurningPower = turningPower;
+            m_DriftElapsedTime = 0.0f;
+            ActivateDriftVFX(true);
+        }
+
+        void EndDrift(bool grantTurbo)
+        {
+            IsDrifting = false;
+            m_CurrentGrip = m_FinalStats.Grip;
+            m_DriftTurningPower = 0.0f;
+
+            if (grantTurbo && DriftTurboDuration > 0.0f)
+            {
+                AddPowerup(new StatPowerup
+                {
+                    modifiers = DriftTurboStats,
+                    PowerUpID = "drift_turbo",
+                    MaxTime = DriftTurboDuration
+                });
+            }
+        }
+
         void GetAxleDistances(out float frontDistance, out float rearDistance)
         {
             Vector3 frontAxleCenter = (FrontLeftWheel.transform.position + FrontRightWheel.transform.position) * 0.5f;
@@ -454,7 +506,8 @@ namespace KartGame.KartSystems
 
             float maxSteerRange = Mathf.Max(m_FinalStats.Steer + DriftAdditionalSteer, 0.001f);
             float steerInputNormalized = Mathf.Clamp(turningPower / maxSteerRange, -1.0f, 1.0f);
-            float steerAngle = steerInputNormalized * TireMaxSteerAngle * Mathf.Deg2Rad;
+            float driftSteerMultiplier = IsDrifting ? DriftSteerAngleMultiplier : 1.0f;
+            float steerAngle = steerInputNormalized * TireMaxSteerAngle * driftSteerMultiplier * Mathf.Deg2Rad;
             float yawRate = Vector3.Dot(Rigidbody.angularVelocity, m_VerticalReference);
 
             float slipAngleLimit = TireSlipAngleLimit * Mathf.Deg2Rad;
@@ -505,6 +558,9 @@ namespace KartGame.KartSystems
             Rigidbody.velocity = transform.TransformDirection(localPlanarVelocity) + verticalVelocity;
 
             float yawMoment = (frontLateralForce * frontDistance) - (rearLateralForce * rearDistance);
+            if (IsDrifting)
+                yawMoment *= DriftYawResponseMultiplier;
+
             float yawInertia = Mathf.Max(Rigidbody.mass * (frontDistance + rearDistance) * (frontDistance + rearDistance) * 0.25f, 0.1f);
             float nextYawRate = yawRate + ((yawMoment / yawInertia) * dt);
             nextYawRate = Mathf.MoveTowards(nextYawRate, 0.0f, TireYawDamping * dt);
@@ -600,9 +656,7 @@ namespace KartGame.KartSystems
                     Vector3 flattenVelocity = Vector3.ProjectOnPlane(Rigidbody.velocity, m_VerticalReference).normalized;
                     if (Vector3.Dot(flattenVelocity, transform.forward * Mathf.Sign(accelInput)) < Mathf.Cos(MinAngleToFinishDrift * Mathf.Deg2Rad))
                     {
-                        IsDrifting = true;
-                        m_CurrentGrip = DriftGrip;
-                        m_DriftTurningPower = 0.0f;
+                        BeginDrift(0.0f);
                     }
                 }
 
@@ -614,16 +668,13 @@ namespace KartGame.KartSystems
                 {
                     if ((WantsToDrift || isBraking) && currentSpeed > maxSpeed * MinSpeedPercentToFinishDrift)
                     {
-                        IsDrifting = true;
-                        m_DriftTurningPower = turningPower + (Mathf.Sign(turningPower) * DriftAdditionalSteer);
-                        m_CurrentGrip = DriftGrip;
-
-                        ActivateDriftVFX(true);
+                        BeginDrift(turningPower + (Mathf.Sign(turningPower) * DriftAdditionalSteer));
                     }
                 }
 
                 if (IsDrifting)
                 {
+                    m_DriftElapsedTime += Time.fixedDeltaTime;
                     float turnInputAbs = Mathf.Abs(turnInput);
                     if (turnInputAbs < k_NullInput)
                         m_DriftTurningPower = Mathf.MoveTowards(m_DriftTurningPower, 0.0f, Mathf.Clamp01(DriftDampening * Time.fixedDeltaTime));
@@ -645,8 +696,8 @@ namespace KartGame.KartSystems
                     if (canEndDrift || currentSpeed < k_NullSpeed)
                     {
                         // No Input, and car aligned with speed direction => Stop the drift
-                        IsDrifting = false;
-                        m_CurrentGrip = m_FinalStats.Grip;
+                        bool shouldGrantTurbo = m_DriftElapsedTime >= DriftTurboMinDuration && currentSpeed > k_NullSpeed;
+                        EndDrift(shouldGrantTurbo);
                     }
 
                 }
