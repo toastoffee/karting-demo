@@ -40,6 +40,23 @@ namespace KartGame.AI
         public AgentMode Mode = AgentMode.Training;
         [Tooltip("What is the initial checkpoint the agent will go to? This value is only for inferencing.")]
         public ushort InitCheckpointIndex;
+        [Tooltip("If enabled, inferencing will align the route progress to the kart's starting position instead of always using InitCheckpointIndex.")]
+        public bool AutoSyncCheckpointFromSpawn = true;
+        [Tooltip("If enabled, apply lightweight recovery when an inference kart stalls or starts driving backward after being repositioned.")]
+        public bool AutoRecoverInInference = true;
+        [Tooltip("If enabled, inferencing karts rotate toward the inferred route direction when they spawn or resync.")]
+        public bool AutoAlignToRouteOnInferenceStart = true;
+        [Tooltip("Minimum planar speed considered as moving for inference recovery.")]
+        public float InferenceRecoverySpeedThreshold = 0.35f;
+        [Tooltip("How long the kart may remain nearly stationary before recovery overrides are applied.")]
+        public float InferenceStuckRecoveryDelay = 1.25f;
+        [Tooltip("How long the kart may move backward before reverse input is suppressed.")]
+        public float InferenceReverseRecoveryDelay = 0.5f;
+        [Tooltip("If the next checkpoint lies this far behind the kart, inference will resync progress and rotate toward the route.")]
+        [Range(-1.0f, 1.0f)]
+        public float InferenceBehindAlignmentThreshold = -0.35f;
+        [Tooltip("Below this planar speed, inference will suppress brake-only inputs that would otherwise make the kart reverse away from the route.")]
+        public float InferenceNoReverseSpeedThreshold = 1.0f;
 
 #endregion
 
@@ -106,6 +123,8 @@ namespace KartGame.AI
         bool m_EndEpisode;
         float m_LastAccumulatedReward;
         bool m_PreviousDriftTurboActive;
+        float m_TimeBelowRecoverySpeed;
+        float m_TimeMovingBackward;
 
         void Awake()
         {
@@ -118,7 +137,18 @@ namespace KartGame.AI
             // If the agent is training, then at the start of the simulation, pick a random checkpoint to train the agent.
             OnEpisodeBegin();
 
-            if (Mode == AgentMode.Inferencing) m_CheckpointIndex = InitCheckpointIndex;
+            if (Mode == AgentMode.Inferencing)
+            {
+                m_CheckpointIndex = ResolveInferenceCheckpointIndex();
+                if (AutoAlignToRouteOnInferenceStart)
+                    AlignToNextCheckpoint(resetMotion: true);
+                m_Acceleration = false;
+                m_Brake = false;
+                m_Steering = 0f;
+                m_PreviousDriftTurboActive = false;
+                m_TimeBelowRecoverySpeed = 0f;
+                m_TimeMovingBackward = 0f;
+            }
         }
 
         void Update()
@@ -235,6 +265,188 @@ namespace KartGame.AI
             }
 
             return false;
+        }
+
+        int FindPreviousCheckpointIndex(int index)
+        {
+            if (!HasCheckpointRoute())
+                return -1;
+
+            for (int offset = 1; offset <= Colliders.Length; offset++)
+            {
+                int candidateIndex = (index - offset + Colliders.Length) % Colliders.Length;
+                if (TryGetCheckpoint(candidateIndex, out _))
+                    return candidateIndex;
+            }
+
+            return -1;
+        }
+
+        int ResolveInferenceCheckpointIndex()
+        {
+            if (!HasCheckpointRoute())
+                return InitCheckpointIndex;
+
+            if (!AutoSyncCheckpointFromSpawn)
+                return Mathf.Clamp(InitCheckpointIndex, 0, Colliders.Length - 1);
+
+            float bestScore = float.MaxValue;
+            int closestIndex = -1;
+            Vector3 position = transform.position;
+
+            for (int i = 0; i < Colliders.Length; i++)
+            {
+                if (Colliders[i] == null)
+                    continue;
+
+                Vector3 toCheckpoint = Colliders[i].transform.position - position;
+                float distanceScore = toCheckpoint.sqrMagnitude;
+
+                if (distanceScore < bestScore)
+                {
+                    bestScore = distanceScore;
+                    closestIndex = i;
+                }
+            }
+
+            if (closestIndex < 0)
+                return Mathf.Clamp(InitCheckpointIndex, 0, Colliders.Length - 1);
+
+            int previousIndex = FindPreviousCheckpointIndex(closestIndex);
+            if (previousIndex < 0)
+                return Mathf.Clamp(InitCheckpointIndex, 0, Colliders.Length - 1);
+
+            if (!TryGetCheckpoint(closestIndex, out var closestCheckpoint))
+                return previousIndex;
+
+            Vector3 routeDirection;
+            if (TryGetNextCheckpointFromIndex(closestIndex, out var nextCheckpoint, out _))
+            {
+                routeDirection = Vector3.ProjectOnPlane(nextCheckpoint.transform.position - closestCheckpoint.transform.position, Vector3.up);
+            }
+            else
+            {
+                routeDirection = Vector3.ProjectOnPlane(closestCheckpoint.transform.forward, Vector3.up);
+            }
+
+            if (routeDirection.sqrMagnitude < 0.001f)
+                return previousIndex;
+
+            Vector3 offsetFromCheckpoint = Vector3.ProjectOnPlane(position - closestCheckpoint.transform.position, Vector3.up);
+            float progressAlongRoute = Vector3.Dot(routeDirection.normalized, offsetFromCheckpoint);
+            return progressAlongRoute >= 0.0f ? closestIndex : previousIndex;
+        }
+
+        bool TryGetNextCheckpointFromIndex(int startIndex, out Collider checkpoint, out int index)
+        {
+            checkpoint = null;
+            index = -1;
+
+            if (!HasCheckpointRoute())
+                return false;
+
+            for (int offset = 1; offset <= Colliders.Length; offset++)
+            {
+                int candidateIndex = (startIndex + offset) % Colliders.Length;
+                if (TryGetCheckpoint(candidateIndex, out checkpoint))
+                {
+                    index = candidateIndex;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        bool TryGetNextCheckpointDirection(out Vector3 direction, out float alignment, out float signedTurn)
+        {
+            direction = transform.forward;
+            alignment = 1.0f;
+            signedTurn = 0.0f;
+
+            if (!TryGetNextCheckpoint(out var nextCollider, out _))
+                return false;
+
+            Vector3 flatDirection = Vector3.ProjectOnPlane(nextCollider.transform.position - transform.position, Vector3.up);
+            if (flatDirection.sqrMagnitude < 0.001f)
+                return false;
+
+            direction = flatDirection.normalized;
+            Vector3 flatForward = Vector3.ProjectOnPlane(transform.forward, Vector3.up).normalized;
+            if (flatForward.sqrMagnitude < 0.001f)
+                flatForward = transform.forward.normalized;
+
+            alignment = Vector3.Dot(flatForward, direction);
+            signedTurn = Mathf.Sign(Vector3.Cross(flatForward, direction).y);
+            return true;
+        }
+
+        bool AlignToNextCheckpoint(bool resetMotion)
+        {
+            if (!TryGetNextCheckpointDirection(out var nextDirection, out _, out _))
+                return false;
+
+            transform.rotation = Quaternion.LookRotation(nextDirection, Vector3.up);
+
+            if (resetMotion && m_Kart != null)
+            {
+                m_Kart.Rigidbody.velocity = Vector3.zero;
+                m_Kart.Rigidbody.angularVelocity = Vector3.zero;
+            }
+
+            return true;
+        }
+
+        void ApplyInferenceRecoveryOverrides()
+        {
+            if (Mode != AgentMode.Inferencing || !AutoRecoverInInference || m_Kart == null)
+                return;
+
+            if (!TryGetNextCheckpointDirection(out var nextDirection, out var alignment, out var signedTurn))
+                return;
+
+            Vector3 planarVelocity = Vector3.ProjectOnPlane(m_Kart.Rigidbody.velocity, Vector3.up);
+            float planarSpeed = planarVelocity.magnitude;
+            float forwardSpeed = Vector3.Dot(planarVelocity, transform.forward);
+            float dt = Time.fixedDeltaTime;
+
+            m_TimeBelowRecoverySpeed = planarSpeed < InferenceRecoverySpeedThreshold ? m_TimeBelowRecoverySpeed + dt : 0f;
+            m_TimeMovingBackward = forwardSpeed < -InferenceRecoverySpeedThreshold ? m_TimeMovingBackward + dt : 0f;
+
+            bool isStuck = m_TimeBelowRecoverySpeed >= InferenceStuckRecoveryDelay;
+            bool isReversing = m_TimeMovingBackward >= InferenceReverseRecoveryDelay;
+            bool nextCheckpointIsAhead = alignment > 0.0f;
+            bool isMovingSlowly = planarSpeed < InferenceNoReverseSpeedThreshold;
+
+            if (alignment <= InferenceBehindAlignmentThreshold && planarSpeed < InferenceRecoverySpeedThreshold)
+            {
+                m_CheckpointIndex = ResolveInferenceCheckpointIndex();
+                if (AlignToNextCheckpoint(resetMotion: true) &&
+                    TryGetNextCheckpointDirection(out nextDirection, out alignment, out signedTurn))
+                {
+                    m_TimeBelowRecoverySpeed = 0f;
+                    m_TimeMovingBackward = 0f;
+                }
+            }
+
+            if (nextCheckpointIsAhead && isMovingSlowly && m_Brake && !m_Kart.IsDrifting)
+            {
+                m_Brake = false;
+                if (!m_Acceleration)
+                    m_Acceleration = true;
+            }
+
+            if (nextCheckpointIsAhead && planarSpeed < InferenceRecoverySpeedThreshold && !m_Acceleration && !m_Brake)
+                m_Acceleration = true;
+
+            if (!isStuck && !isReversing)
+                return;
+
+            m_Acceleration = true;
+            m_Brake = false;
+
+            if (Mathf.Abs(m_Steering) < 0.01f && signedTurn != 0.0f)
+                m_Steering = signedTurn;
         }
 
         float Sign(float value)
@@ -379,6 +591,8 @@ namespace KartGame.AI
 
         public InputData GenerateInput()
         {
+            ApplyInferenceRecoveryOverrides();
+
             return new InputData
             {
                 Accelerate = m_Acceleration,
