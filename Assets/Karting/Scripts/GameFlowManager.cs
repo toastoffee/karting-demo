@@ -136,8 +136,16 @@ public class GameFlowManager : MonoBehaviour
                 // See if it's time to load the end scene (after the delay)
                 if (Time.time >= m_TimeLoadEndGameScene)
                 {
-                    SceneManager.LoadScene(m_SceneToLoad);
-                    gameState = GameState.Play;
+                    if (Application.CanStreamedLevelBeLoaded(m_SceneToLoad))
+                    {
+                        SceneManager.LoadScene(m_SceneToLoad);
+                        gameState = GameState.Play;
+                    }
+                    else
+                    {
+                        Debug.LogError($"Scene '{m_SceneToLoad}' is not enabled in Build Settings. Add it in File > Build Settings or ProjectSettings/EditorBuildSettings.asset.");
+                        enabled = false;
+                    }
                 }
             }
         }
