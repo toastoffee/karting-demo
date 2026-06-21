@@ -17,7 +17,6 @@ namespace KartGame.Multiplayer
 
         const string BuiltinFontName = "LegacyRuntime.ttf";
         const string AiStateMessageName = "KartGame.Multiplayer.AIState";
-
         [Header("Networking")]
         [SerializeField] GameObject playerPrefab;
         [SerializeField] string defaultAddress = "127.0.0.1";
@@ -30,6 +29,9 @@ namespace KartGame.Multiplayer
 
         InputField m_AddressInput;
         InputField m_PortInput;
+        Button m_CreateRoomButton;
+        Button m_JoinRoomButton;
+        Button m_LeaveRoomButton;
         Text m_StatusText;
         Text m_PlayersText;
         bool m_EventsRegistered;
@@ -40,6 +42,11 @@ namespace KartGame.Multiplayer
         Quaternion m_BaseSpawnRotation;
         readonly List<AiKartBinding> m_AiKarts = new List<AiKartBinding>();
         float m_NextAiStateSendTime;
+        Vector3 m_PendingLocalSpawnPosition;
+        Quaternion m_PendingLocalSpawnRotation = Quaternion.identity;
+        Vector3 m_PendingLocalSpawnVelocity;
+        Vector3 m_PendingLocalSpawnAngularVelocity;
+        int m_PendingLocalSnapFrames;
 
         sealed class AiKartBinding
         {
@@ -62,6 +69,7 @@ namespace KartGame.Multiplayer
             CacheSceneReferences();
             EnsureNetworkManager();
             EnsureUi();
+            UpdateSessionUiState();
             UpdateStatus("Ready. Create a room or join from another client.");
             UpdatePlayerCount();
         }
@@ -80,6 +88,8 @@ namespace KartGame.Multiplayer
 
         void FixedUpdate()
         {
+            ApplyPendingLocalPlayerSnap();
+
             if (m_NetworkManager == null || !m_NetworkManager.IsServer || !m_NetworkManager.IsListening)
                 return;
 
@@ -97,6 +107,7 @@ namespace KartGame.Multiplayer
 
             CacheSceneReferences();
             EnsureUi();
+            UpdateSessionUiState();
             UpdatePlayerCount();
         }
 
@@ -259,30 +270,30 @@ namespace KartGame.Multiplayer
             panelImage.color = new Color(0.05f, 0.07f, 0.10f, 0.84f);
 
             var panelRect = panel.GetComponent<RectTransform>();
-            panelRect.anchorMin = new Vector2(0.68f, 0.05f);
-            panelRect.anchorMax = new Vector2(0.98f, 0.95f);
+            panelRect.anchorMin = new Vector2(0.52f, 0.04f);
+            panelRect.anchorMax = new Vector2(0.98f, 0.96f);
             panelRect.offsetMin = Vector2.zero;
             panelRect.offsetMax = Vector2.zero;
 
             var layout = panel.AddComponent<VerticalLayoutGroup>();
-            layout.padding = new RectOffset(20, 20, 20, 20);
-            layout.spacing = 10;
+            layout.padding = new RectOffset(14, 14, 14, 14);
+            layout.spacing = 6;
             layout.childControlHeight = false;
             layout.childControlWidth = true;
             layout.childForceExpandHeight = false;
 
-            CreateText(panel.transform, "Title", "MainScene Multiplayer", 26, FontStyle.Bold);
-            CreateText(panel.transform, "Hint", "Host simulates AI karts. Clients receive AI state sync only.", 16, FontStyle.Normal);
+            CreateText(panel.transform, "Title", "MainScene Multiplayer", 20, FontStyle.Bold, 38);
+            CreateText(panel.transform, "Hint", "Host simulates AI karts. Clients receive AI state sync only.", 13, FontStyle.Normal, 34);
 
             m_AddressInput = CreateInputField(panel.transform, "Server Address", defaultAddress);
             m_PortInput = CreateInputField(panel.transform, "Port", defaultPort.ToString());
 
-            CreateButton(panel.transform, "Create Room", StartHost);
-            CreateButton(panel.transform, "Join Room", StartClient);
-            CreateButton(panel.transform, "Leave Room", LeaveRoom);
+            m_CreateRoomButton = CreateButton(panel.transform, "Create Room", StartHost);
+            m_JoinRoomButton = CreateButton(panel.transform, "Join Room", StartClient);
+            m_LeaveRoomButton = CreateButton(panel.transform, "Leave Room", LeaveRoom);
 
-            m_StatusText = CreateText(panel.transform, "Status", string.Empty, 16, FontStyle.Normal);
-            m_PlayersText = CreateText(panel.transform, "Players", string.Empty, 16, FontStyle.Normal);
+            m_StatusText = CreateText(panel.transform, "Status", string.Empty, 13, FontStyle.Normal, 30);
+            m_PlayersText = CreateText(panel.transform, "Players", string.Empty, 13, FontStyle.Normal, 22);
         }
 
         GameObject CreateUiObject(string name, Transform parent)
@@ -292,7 +303,7 @@ namespace KartGame.Multiplayer
             return gameObject;
         }
 
-        Text CreateText(Transform parent, string objectName, string content, int fontSize, FontStyle fontStyle)
+        Text CreateText(Transform parent, string objectName, string content, int fontSize, FontStyle fontStyle, float preferredHeight = -1.0f)
         {
             var textObject = CreateUiObject(objectName, parent);
             var text = textObject.AddComponent<Text>();
@@ -305,8 +316,9 @@ namespace KartGame.Multiplayer
             text.text = content;
 
             var layout = textObject.AddComponent<LayoutElement>();
-            layout.minHeight = fontSize + 12;
-            layout.preferredHeight = fontSize + 18;
+            float defaultHeight = fontSize + 18;
+            layout.minHeight = preferredHeight > 0.0f ? preferredHeight : defaultHeight;
+            layout.preferredHeight = preferredHeight > 0.0f ? preferredHeight : defaultHeight;
             return text;
         }
 
@@ -317,8 +329,8 @@ namespace KartGame.Multiplayer
             background.color = new Color(0.14f, 0.16f, 0.20f, 0.95f);
 
             var layout = root.AddComponent<LayoutElement>();
-            layout.minHeight = 48;
-            layout.preferredHeight = 48;
+            layout.minHeight = 36;
+            layout.preferredHeight = 36;
 
             var inputField = root.AddComponent<InputField>();
             inputField.targetGraphic = background;
@@ -326,14 +338,14 @@ namespace KartGame.Multiplayer
             var textViewport = CreateUiObject("Text", root.transform);
             var text = textViewport.AddComponent<Text>();
             text.font = Resources.GetBuiltinResource<Font>(BuiltinFontName);
-            text.fontSize = 18;
+            text.fontSize = 15;
             text.color = Color.white;
             text.alignment = TextAnchor.MiddleLeft;
 
             var placeholderObject = CreateUiObject("Placeholder", root.transform);
             var placeholderText = placeholderObject.AddComponent<Text>();
             placeholderText.font = Resources.GetBuiltinResource<Font>(BuiltinFontName);
-            placeholderText.fontSize = 18;
+            placeholderText.fontSize = 15;
             placeholderText.fontStyle = FontStyle.Italic;
             placeholderText.color = new Color(1.0f, 1.0f, 1.0f, 0.35f);
             placeholderText.text = placeholder;
@@ -359,10 +371,10 @@ namespace KartGame.Multiplayer
             button.onClick.AddListener(onClick);
 
             var layout = buttonObject.AddComponent<LayoutElement>();
-            layout.minHeight = 44;
-            layout.preferredHeight = 44;
+            layout.minHeight = 34;
+            layout.preferredHeight = 34;
 
-            var text = CreateText(buttonObject.transform, "Label", label, 18, FontStyle.Bold);
+            var text = CreateText(buttonObject.transform, "Label", label, 15, FontStyle.Bold, 34);
             text.alignment = TextAnchor.MiddleCenter;
             text.raycastTarget = false;
             StretchRect(text.GetComponent<RectTransform>(), Vector2.zero, Vector2.zero);
@@ -380,13 +392,18 @@ namespace KartGame.Multiplayer
         void ApprovalCheck(NetworkManager.ConnectionApprovalRequest request, NetworkManager.ConnectionApprovalResponse response)
         {
             bool roomHasSpace = m_NetworkManager != null && m_NetworkManager.ConnectedClientsIds.Count < maxPlayers;
+            bool isLocalHostSpawn = m_NetworkManager != null && request.ClientNetworkId == NetworkManager.ServerClientId;
 
             response.Approved = roomHasSpace;
             response.CreatePlayerObject = roomHasSpace;
             response.Pending = false;
             response.Reason = roomHasSpace ? string.Empty : "Room is full.";
-            response.Position = GetSpawnPosition(m_NetworkManager != null ? m_NetworkManager.ConnectedClientsIds.Count : 0);
-            response.Rotation = m_BaseSpawnRotation;
+            response.Position = isLocalHostSpawn
+                ? m_PendingLocalSpawnPosition
+                : GetSpawnPosition(m_NetworkManager != null ? m_NetworkManager.ConnectedClientsIds.Count : 0);
+            response.Rotation = isLocalHostSpawn
+                ? m_PendingLocalSpawnRotation
+                : m_BaseSpawnRotation;
         }
 
         Vector3 GetSpawnPosition(int playerIndex)
@@ -399,7 +416,7 @@ namespace KartGame.Multiplayer
                 new Vector3(5.0f, 0.0f, -5.0f),
             };
 
-            return m_BaseSpawnPosition + spawnOffsets[playerIndex % spawnOffsets.Length];
+            return m_BaseSpawnPosition + (m_BaseSpawnRotation * spawnOffsets[playerIndex % spawnOffsets.Length]);
         }
 
         void StartHost()
@@ -460,6 +477,8 @@ namespace KartGame.Multiplayer
             }
 
             CacheSceneReferences();
+            RefreshSpawnAnchor();
+            CachePendingLocalSpawnState();
             SetSinglePlayerSceneState(false);
             SetAiSimulationAuthority(isHostAuthority);
             RegisterAiMessageHandler();
@@ -505,11 +524,13 @@ namespace KartGame.Multiplayer
 
         void OnServerStarted()
         {
+            UpdateSessionUiState();
             UpdatePlayerCount();
         }
 
         void OnClientConnected(ulong clientId)
         {
+            UpdateSessionUiState();
             UpdatePlayerCount();
 
             if (m_NetworkManager != null && clientId == m_NetworkManager.LocalClientId)
@@ -525,6 +546,7 @@ namespace KartGame.Multiplayer
 
         void OnClientDisconnected(ulong clientId)
         {
+            UpdateSessionUiState();
             UpdatePlayerCount();
 
             if (m_NetworkManager != null && clientId == m_NetworkManager.LocalClientId)
@@ -601,6 +623,9 @@ namespace KartGame.Multiplayer
 
         public void RegisterLocalPlayer(ArcadeKart localPlayerKart)
         {
+            if (localPlayerKart != null)
+                SnapLocalPlayerToPendingState(localPlayerKart);
+
             var gameFlow = FindObjectOfType<GameFlowManager>();
             if (gameFlow != null)
                 gameFlow.RefreshKarts(localPlayerKart);
@@ -612,6 +637,71 @@ namespace KartGame.Multiplayer
                 return;
 
             m_ScenePlayerRoot.SetActive(active);
+        }
+
+        void RefreshSpawnAnchor()
+        {
+            if (m_ScenePlayerRoot == null)
+                return;
+
+            m_BaseSpawnPosition = m_ScenePlayerRoot.transform.position;
+            m_BaseSpawnRotation = m_ScenePlayerRoot.transform.rotation;
+        }
+
+        void CachePendingLocalSpawnState()
+        {
+            if (m_ScenePlayerRoot == null)
+                return;
+
+            m_PendingLocalSpawnPosition = m_ScenePlayerRoot.transform.position;
+            m_PendingLocalSpawnRotation = m_ScenePlayerRoot.transform.rotation;
+            m_PendingLocalSpawnVelocity = Vector3.zero;
+            m_PendingLocalSpawnAngularVelocity = Vector3.zero;
+            m_PendingLocalSnapFrames = 12;
+        }
+
+        void ApplyPendingLocalPlayerSnap()
+        {
+            if (m_PendingLocalSnapFrames <= 0 || m_NetworkManager == null || !m_NetworkManager.IsListening)
+                return;
+
+            var localPlayer = FindLocalNetworkPlayerKart();
+            if (localPlayer == null)
+                return;
+
+            SnapLocalPlayerToPendingState(localPlayer);
+            m_PendingLocalSnapFrames--;
+        }
+
+        ArcadeKart FindLocalNetworkPlayerKart()
+        {
+            var players = FindObjectsOfType<NetworkKartPlayer>(true);
+            for (int i = 0; i < players.Length; i++)
+            {
+                if (players[i] != null && players[i].IsOwner)
+                    return players[i].GetComponent<ArcadeKart>();
+            }
+
+            return null;
+        }
+
+        void SnapLocalPlayerToPendingState(ArcadeKart localPlayerKart)
+        {
+            if (localPlayerKart == null)
+                return;
+
+            localPlayerKart.transform.SetPositionAndRotation(m_PendingLocalSpawnPosition, m_PendingLocalSpawnRotation);
+
+            var rigidbody = localPlayerKart.GetComponent<Rigidbody>();
+            if (rigidbody != null)
+            {
+                rigidbody.position = m_PendingLocalSpawnPosition;
+                rigidbody.rotation = m_PendingLocalSpawnRotation;
+                rigidbody.velocity = m_PendingLocalSpawnVelocity;
+                rigidbody.angularVelocity = m_PendingLocalSpawnAngularVelocity;
+                rigidbody.Sleep();
+                rigidbody.WakeUp();
+            }
         }
 
         void RestoreSinglePlayerSceneState()
@@ -741,6 +831,26 @@ namespace KartGame.Multiplayer
                 playerCount = m_NetworkManager.ConnectedClientsIds.Count;
 
             m_PlayersText.text = $"Players: {playerCount}/{maxPlayers}";
+        }
+
+        void UpdateSessionUiState()
+        {
+            bool isConnected = m_NetworkManager != null && m_NetworkManager.IsListening;
+
+            if (m_AddressInput != null)
+                m_AddressInput.gameObject.SetActive(!isConnected);
+
+            if (m_PortInput != null)
+                m_PortInput.gameObject.SetActive(!isConnected);
+
+            if (m_CreateRoomButton != null)
+                m_CreateRoomButton.gameObject.SetActive(!isConnected);
+
+            if (m_JoinRoomButton != null)
+                m_JoinRoomButton.gameObject.SetActive(!isConnected);
+
+            if (m_LeaveRoomButton != null)
+                m_LeaveRoomButton.gameObject.SetActive(isConnected);
         }
     }
 }
