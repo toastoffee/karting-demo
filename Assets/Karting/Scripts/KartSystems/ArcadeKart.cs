@@ -5,6 +5,7 @@ using UnityEngine.VFX;
 
 namespace KartGame.KartSystems
 {
+    [RequireComponent(typeof(Rigidbody))]
     public class ArcadeKart : MonoBehaviour
     {
         [System.Serializable]
@@ -248,6 +249,7 @@ namespace KartGame.KartSystems
         Vector3 m_LastCollisionNormal;
         bool m_HasCollision;
         bool m_InAir = false;
+        bool m_HasLoggedMissingSetup;
 
         public void AddPowerup(StatPowerup statPowerup)
         {
@@ -266,6 +268,9 @@ namespace KartGame.KartSystems
         {
             foreach (var vfx in m_DriftSparkInstances)
             {
+                if (vfx.wheel == null || vfx.sparks == null)
+                    continue;
+
                 if (active && vfx.wheel.GetGroundHit(out WheelHit hit))
                 {
                     if (!vfx.sparks.isPlaying)
@@ -280,19 +285,30 @@ namespace KartGame.KartSystems
             }
 
             foreach (var trail in m_DriftTrailInstances)
+            {
+                if (trail.wheel == null || trail.Item3 == null)
+                    continue;
+
                 trail.Item3.emitting = active && trail.wheel.GetGroundHit(out WheelHit hit);
+            }
         }
 
         private void UpdateDriftVFXOrientation()
         {
             foreach (var vfx in m_DriftSparkInstances)
             {
+                if (vfx.wheel == null || vfx.sparks == null)
+                    continue;
+
                 vfx.sparks.transform.position = vfx.wheel.transform.position - (vfx.wheel.radius * Vector3.up) + (DriftTrailVerticalOffset * Vector3.up) + (transform.right * vfx.horizontalOffset);
                 vfx.sparks.transform.rotation = transform.rotation * Quaternion.Euler(0.0f, 0.0f, vfx.rotation);
             }
 
             foreach (var trail in m_DriftTrailInstances)
             {
+                if (trail.wheel == null || trail.trailRoot == null)
+                    continue;
+
                 trail.trailRoot.transform.position = trail.wheel.transform.position - (trail.wheel.radius * Vector3.up) + (DriftTrailVerticalOffset * Vector3.up);
                 trail.trailRoot.transform.rotation = transform.rotation;
             }
@@ -300,6 +316,9 @@ namespace KartGame.KartSystems
 
         void UpdateSuspensionParams(WheelCollider wheel)
         {
+            if (wheel == null)
+                return;
+
             wheel.suspensionDistance = SuspensionHeight;
             wheel.center = new Vector3(0.0f, WheelsPositionVerticalOffset, 0.0f);
             JointSpring spring = wheel.suspensionSpring;
@@ -343,22 +362,37 @@ namespace KartGame.KartSystems
 
         void AddTrailToWheel(WheelCollider wheel)
         {
+            if (wheel == null || DriftTrailPrefab == null)
+                return;
+
             GameObject trailRoot = Instantiate(DriftTrailPrefab, gameObject.transform, false);
             TrailRenderer trail = trailRoot.GetComponentInChildren<TrailRenderer>();
+            if (trail == null)
+                return;
+
             trail.emitting = false;
             m_DriftTrailInstances.Add((trailRoot, wheel, trail));
         }
 
         void AddSparkToWheel(WheelCollider wheel, float horizontalOffset, float rotation)
         {
+            if (wheel == null || DriftSparkVFX == null)
+                return;
+
             GameObject vfx = Instantiate(DriftSparkVFX.gameObject, wheel.transform, false);
             ParticleSystem spark = vfx.GetComponent<ParticleSystem>();
+            if (spark == null)
+                return;
+
             spark.Stop();
             m_DriftSparkInstances.Add((wheel, horizontalOffset, -rotation, spark));
         }
 
         void FixedUpdate()
         {
+            if (!EnsureRuntimeReferences())
+                return;
+
             UpdateSuspensionParams(FrontLeftWheel);
             UpdateSuspensionParams(FrontRightWheel);
             UpdateSuspensionParams(RearLeftWheel);
@@ -370,16 +404,18 @@ namespace KartGame.KartSystems
             TickPowerups();
 
             // apply our physics properties
-            Rigidbody.centerOfMass = transform.InverseTransformPoint(CenterOfMass.position);
+            Rigidbody.centerOfMass = CenterOfMass != null
+                ? transform.InverseTransformPoint(CenterOfMass.position)
+                : Vector3.zero;
 
             int groundedCount = 0;
-            if (FrontLeftWheel.isGrounded && FrontLeftWheel.GetGroundHit(out WheelHit hit))
+            if (FrontLeftWheel != null && FrontLeftWheel.isGrounded && FrontLeftWheel.GetGroundHit(out WheelHit hit))
                 groundedCount++;
-            if (FrontRightWheel.isGrounded && FrontRightWheel.GetGroundHit(out hit))
+            if (FrontRightWheel != null && FrontRightWheel.isGrounded && FrontRightWheel.GetGroundHit(out hit))
                 groundedCount++;
-            if (RearLeftWheel.isGrounded && RearLeftWheel.GetGroundHit(out hit))
+            if (RearLeftWheel != null && RearLeftWheel.isGrounded && RearLeftWheel.GetGroundHit(out hit))
                 groundedCount++;
-            if (RearRightWheel.isGrounded && RearRightWheel.GetGroundHit(out hit))
+            if (RearRightWheel != null && RearRightWheel.isGrounded && RearRightWheel.GetGroundHit(out hit))
                 groundedCount++;
 
             // calculate how grounded and airborne we are
@@ -414,8 +450,31 @@ namespace KartGame.KartSystems
                     continue;
 
                 Input = m_Inputs[i].GenerateInput();
-                WantsToDrift = Input.Brake && Vector3.Dot(Rigidbody.velocity, transform.forward) > 0.0f;
+                WantsToDrift = Rigidbody != null && Input.Brake && Vector3.Dot(Rigidbody.velocity, transform.forward) > 0.0f;
             }
+        }
+
+        bool EnsureRuntimeReferences()
+        {
+            if (Rigidbody == null)
+                Rigidbody = GetComponent<Rigidbody>();
+
+            if (m_Inputs == null)
+                m_Inputs = GetComponents<IInput>();
+
+            bool hasRigidBody = Rigidbody != null;
+            bool hasWheelSetup = FrontLeftWheel != null
+                && FrontRightWheel != null
+                && RearLeftWheel != null
+                && RearRightWheel != null;
+
+            if ((!hasRigidBody || !hasWheelSetup) && !m_HasLoggedMissingSetup)
+            {
+                Debug.LogWarning("ArcadeKart is missing required runtime references. Movement update will be skipped until setup is restored.", this);
+                m_HasLoggedMissingSetup = true;
+            }
+
+            return hasRigidBody && hasWheelSetup;
         }
 
         void TickPowerups()

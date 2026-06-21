@@ -6,6 +6,7 @@ using Unity.Collections;
 using Unity.Netcode;
 using Unity.Netcode.Transports.UTP;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
@@ -14,11 +15,13 @@ namespace KartGame.Multiplayer
     public class MainSceneMultiplayerBootstrap : MonoBehaviour
     {
         public const string SceneName = "MainScene";
+        static MainSceneMultiplayerBootstrap s_Instance;
 
         const string BuiltinFontName = "LegacyRuntime.ttf";
         const string AiStateMessageName = "KartGame.Multiplayer.AIState";
         [Header("Networking")]
         [SerializeField] GameObject playerPrefab;
+        [SerializeField] GameObject uiPrefab;
         [SerializeField] string defaultAddress = "127.0.0.1";
         [SerializeField] ushort defaultPort = 7777;
         [SerializeField] int maxPlayers = 4;
@@ -34,8 +37,10 @@ namespace KartGame.Multiplayer
         Button m_LeaveRoomButton;
         Text m_StatusText;
         Text m_PlayersText;
+        GameObject m_UiRoot;
         bool m_EventsRegistered;
         bool m_AiMessageRegistered;
+        float m_NextUiRecoveryTime;
 
         GameObject m_ScenePlayerRoot;
         Vector3 m_BaseSpawnPosition;
@@ -63,8 +68,18 @@ namespace KartGame.Multiplayer
 
         void Awake()
         {
+            if (s_Instance != null && s_Instance != this)
+            {
+                Destroy(gameObject);
+                return;
+            }
+
+            s_Instance = this;
+
             if (playerPrefab == null)
                 playerPrefab = Resources.Load<GameObject>("Multiplayer/NetworkKartPlayer");
+            if (uiPrefab == null)
+                uiPrefab = Resources.Load<GameObject>("Multiplayer/MainSceneMultiplayerUI");
 
             CacheSceneReferences();
             EnsureNetworkManager();
@@ -79,8 +94,18 @@ namespace KartGame.Multiplayer
             SceneManager.sceneLoaded += OnSceneLoaded;
         }
 
+        void Start()
+        {
+            EnsureUi();
+            UpdateSessionUiState();
+            UpdatePlayerCount();
+        }
+
         void OnDisable()
         {
+            if (s_Instance == this)
+                s_Instance = null;
+
             SceneManager.sceneLoaded -= OnSceneLoaded;
             UnregisterNetworkEvents();
             UnregisterAiMessageHandler();
@@ -98,6 +123,23 @@ namespace KartGame.Multiplayer
 
             m_NextAiStateSendTime = Time.unscaledTime + (1.0f / Mathf.Max(aiStateSendRate, 1.0f));
             BroadcastAiState();
+        }
+
+        void Update()
+        {
+            if (SceneManager.GetActiveScene().name != SceneName)
+                return;
+
+            if (Time.unscaledTime < m_NextUiRecoveryTime)
+                return;
+
+            m_NextUiRecoveryTime = Time.unscaledTime + 0.5f;
+
+            if (!IsUiFullyBound())
+                EnsureUi();
+
+            EnsureEventSystem();
+            EnsureUiRootVisible();
         }
 
         void OnSceneLoaded(Scene scene, LoadSceneMode mode)
@@ -256,44 +298,124 @@ namespace KartGame.Multiplayer
 
         void EnsureUi()
         {
-            if (GameObject.Find("MainSceneMultiplayerCanvas") != null)
-                return;
+            if (m_UiRoot == null)
+            {
+                var existing = GameObject.Find("MainSceneMultiplayerUI");
+                if (IsUsableUiRoot(existing))
+                    m_UiRoot = existing;
+                else if (existing != null)
+                    Destroy(existing);
+            }
 
-            var canvasObject = new GameObject("MainSceneMultiplayerCanvas");
+            if (m_UiRoot == null && uiPrefab != null)
+            {
+                var instance = Instantiate(uiPrefab);
+                instance.name = uiPrefab.name;
+                if (IsUsableUiRoot(instance))
+                    m_UiRoot = instance;
+                else
+                    Destroy(instance);
+            }
+
+            if (m_UiRoot == null)
+                m_UiRoot = BuildFallbackUi();
+
+            EnsureEventSystem();
+            EnsureUiRootVisible();
+
+            m_AddressInput = FindUiComponent<InputField>("Panel/Content/Server Address Input");
+            m_PortInput = FindUiComponent<InputField>("Panel/Content/Port Input");
+            m_CreateRoomButton = FindUiComponent<Button>("Panel/Content/Create Room");
+            m_JoinRoomButton = FindUiComponent<Button>("Panel/Content/Join Room");
+            m_LeaveRoomButton = FindUiComponent<Button>("Panel/Content/Leave Room");
+            m_StatusText = FindUiComponent<Text>("Panel/Content/Status");
+            m_PlayersText = FindUiComponent<Text>("Panel/Content/Players");
+
+            if (m_AddressInput != null && string.IsNullOrWhiteSpace(m_AddressInput.text))
+                m_AddressInput.text = defaultAddress;
+
+            if (m_PortInput != null && string.IsNullOrWhiteSpace(m_PortInput.text))
+                m_PortInput.text = defaultPort.ToString();
+
+            RegisterButton(m_CreateRoomButton, StartHost);
+            RegisterButton(m_JoinRoomButton, StartClient);
+            RegisterButton(m_LeaveRoomButton, LeaveRoom);
+        }
+
+        bool IsUiFullyBound()
+        {
+            return IsUsableUiRoot(m_UiRoot)
+                && m_AddressInput != null
+                && m_PortInput != null
+                && m_CreateRoomButton != null
+                && m_JoinRoomButton != null
+                && m_LeaveRoomButton != null
+                && m_StatusText != null
+                && m_PlayersText != null;
+        }
+
+        bool IsUsableUiRoot(GameObject root)
+        {
+            if (root == null)
+                return false;
+
+            if (root.GetComponentInChildren<Canvas>(true) == null)
+                return false;
+
+            Transform content = root.transform.Find("Panel/Content");
+            return content != null;
+        }
+
+        GameObject BuildFallbackUi()
+        {
+            var canvasObject = new GameObject("MainSceneMultiplayerUI");
             var canvas = canvasObject.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-            canvasObject.AddComponent<CanvasScaler>().uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            canvas.sortingOrder = 50;
+
+            var scaler = canvasObject.AddComponent<CanvasScaler>();
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1920.0f, 1080.0f);
+            scaler.matchWidthOrHeight = 1.0f;
+
             canvasObject.AddComponent<GraphicRaycaster>();
 
             var panel = CreateUiObject("Panel", canvasObject.transform);
             var panelImage = panel.AddComponent<Image>();
-            panelImage.color = new Color(0.05f, 0.07f, 0.10f, 0.84f);
+            panelImage.color = new Color(0.05f, 0.07f, 0.10f, 0.92f);
 
             var panelRect = panel.GetComponent<RectTransform>();
-            panelRect.anchorMin = new Vector2(0.52f, 0.04f);
-            panelRect.anchorMax = new Vector2(0.98f, 0.96f);
-            panelRect.offsetMin = Vector2.zero;
-            panelRect.offsetMax = Vector2.zero;
+            panelRect.anchorMin = new Vector2(1.0f, 1.0f);
+            panelRect.anchorMax = new Vector2(1.0f, 1.0f);
+            panelRect.pivot = new Vector2(1.0f, 1.0f);
+            panelRect.sizeDelta = new Vector2(430.0f, 470.0f);
+            panelRect.anchoredPosition = new Vector2(-24.0f, -24.0f);
 
-            var layout = panel.AddComponent<VerticalLayoutGroup>();
-            layout.padding = new RectOffset(14, 14, 14, 14);
-            layout.spacing = 6;
+            var content = CreateUiObject("Content", panel.transform);
+            StretchRect(content.GetComponent<RectTransform>(), new Vector2(16.0f, 16.0f), new Vector2(-16.0f, -16.0f));
+
+            var layout = content.AddComponent<VerticalLayoutGroup>();
+            layout.padding = new RectOffset(18, 18, 18, 18);
+            layout.spacing = 8;
+            layout.childAlignment = TextAnchor.UpperCenter;
             layout.childControlHeight = false;
             layout.childControlWidth = true;
             layout.childForceExpandHeight = false;
+            layout.childForceExpandWidth = true;
 
-            CreateText(panel.transform, "Title", "MainScene Multiplayer", 20, FontStyle.Bold, 38);
-            CreateText(panel.transform, "Hint", "Host simulates AI karts. Clients receive AI state sync only.", 13, FontStyle.Normal, 34);
+            CreateText(content.transform, "Title", "MainScene Multiplayer", 22, FontStyle.Bold, 34, TextAnchor.MiddleLeft);
+            CreateText(content.transform, "Hint", "Create or join a room here. Host simulates AI karts and syncs them to clients.", 14, FontStyle.Normal, 44, TextAnchor.UpperLeft);
+            CreateInputField(content.transform, "Server Address", defaultAddress);
+            CreateInputField(content.transform, "Port", defaultPort.ToString());
+            CreateButton(content.transform, "Create Room", new Color(0.20f, 0.45f, 0.78f, 0.95f));
+            CreateButton(content.transform, "Join Room", new Color(0.16f, 0.63f, 0.47f, 0.95f));
+            CreateButton(content.transform, "Leave Room", new Color(0.78f, 0.28f, 0.25f, 0.95f));
+            CreateText(content.transform, "Status", "Status: Ready.", 14, FontStyle.Normal, 54, TextAnchor.UpperLeft);
+            CreateText(content.transform, "Players", $"Players: 0/{maxPlayers}", 14, FontStyle.Normal, 24, TextAnchor.MiddleLeft);
 
-            m_AddressInput = CreateInputField(panel.transform, "Server Address", defaultAddress);
-            m_PortInput = CreateInputField(panel.transform, "Port", defaultPort.ToString());
+            LayoutRebuilder.ForceRebuildLayoutImmediate(panelRect);
 
-            m_CreateRoomButton = CreateButton(panel.transform, "Create Room", StartHost);
-            m_JoinRoomButton = CreateButton(panel.transform, "Join Room", StartClient);
-            m_LeaveRoomButton = CreateButton(panel.transform, "Leave Room", LeaveRoom);
-
-            m_StatusText = CreateText(panel.transform, "Status", string.Empty, 13, FontStyle.Normal, 30);
-            m_PlayersText = CreateText(panel.transform, "Players", string.Empty, 13, FontStyle.Normal, 22);
+            return canvasObject;
         }
 
         GameObject CreateUiObject(string name, Transform parent)
@@ -303,7 +425,7 @@ namespace KartGame.Multiplayer
             return gameObject;
         }
 
-        Text CreateText(Transform parent, string objectName, string content, int fontSize, FontStyle fontStyle, float preferredHeight = -1.0f)
+        Text CreateText(Transform parent, string objectName, string content, int fontSize, FontStyle fontStyle, float preferredHeight, TextAnchor alignment)
         {
             var textObject = CreateUiObject(objectName, parent);
             var text = textObject.AddComponent<Text>();
@@ -311,29 +433,29 @@ namespace KartGame.Multiplayer
             text.fontSize = fontSize;
             text.fontStyle = fontStyle;
             text.color = Color.white;
+            text.alignment = alignment;
             text.horizontalOverflow = HorizontalWrapMode.Wrap;
             text.verticalOverflow = VerticalWrapMode.Overflow;
             text.text = content;
 
             var layout = textObject.AddComponent<LayoutElement>();
-            float defaultHeight = fontSize + 18;
-            layout.minHeight = preferredHeight > 0.0f ? preferredHeight : defaultHeight;
-            layout.preferredHeight = preferredHeight > 0.0f ? preferredHeight : defaultHeight;
+            layout.minHeight = preferredHeight;
+            layout.preferredHeight = preferredHeight;
             return text;
         }
 
-        InputField CreateInputField(Transform parent, string placeholder, string value)
+        InputField CreateInputField(Transform parent, string fieldName, string value)
         {
-            var root = CreateUiObject($"{placeholder} Input", parent);
-            var background = root.AddComponent<Image>();
-            background.color = new Color(0.14f, 0.16f, 0.20f, 0.95f);
-
+            var root = CreateUiObject($"{fieldName} Input", parent);
             var layout = root.AddComponent<LayoutElement>();
-            layout.minHeight = 36;
-            layout.preferredHeight = 36;
+            layout.minHeight = 42;
+            layout.preferredHeight = 42;
+
+            var image = root.AddComponent<Image>();
+            image.color = new Color(0.14f, 0.16f, 0.20f, 0.97f);
 
             var inputField = root.AddComponent<InputField>();
-            inputField.targetGraphic = background;
+            inputField.targetGraphic = image;
 
             var textViewport = CreateUiObject("Text", root.transform);
             var text = textViewport.AddComponent<Text>();
@@ -348,11 +470,11 @@ namespace KartGame.Multiplayer
             placeholderText.fontSize = 15;
             placeholderText.fontStyle = FontStyle.Italic;
             placeholderText.color = new Color(1.0f, 1.0f, 1.0f, 0.35f);
-            placeholderText.text = placeholder;
+            placeholderText.text = fieldName;
             placeholderText.alignment = TextAnchor.MiddleLeft;
 
-            StretchRect(textViewport.GetComponent<RectTransform>(), new Vector2(12, 8), new Vector2(-12, -8));
-            StretchRect(placeholderObject.GetComponent<RectTransform>(), new Vector2(12, 8), new Vector2(-12, -8));
+            StretchRect(textViewport.GetComponent<RectTransform>(), new Vector2(12.0f, 8.0f), new Vector2(-12.0f, -8.0f));
+            StretchRect(placeholderObject.GetComponent<RectTransform>(), new Vector2(12.0f, 8.0f), new Vector2(-12.0f, -8.0f));
 
             inputField.textComponent = text;
             inputField.placeholder = placeholderText;
@@ -360,22 +482,20 @@ namespace KartGame.Multiplayer
             return inputField;
         }
 
-        Button CreateButton(Transform parent, string label, UnityEngine.Events.UnityAction onClick)
+        Button CreateButton(Transform parent, string label, Color color)
         {
             var buttonObject = CreateUiObject(label, parent);
+            var layout = buttonObject.AddComponent<LayoutElement>();
+            layout.minHeight = 40;
+            layout.preferredHeight = 40;
+
             var image = buttonObject.AddComponent<Image>();
-            image.color = new Color(0.20f, 0.45f, 0.78f, 0.95f);
+            image.color = color;
 
             var button = buttonObject.AddComponent<Button>();
             button.targetGraphic = image;
-            button.onClick.AddListener(onClick);
 
-            var layout = buttonObject.AddComponent<LayoutElement>();
-            layout.minHeight = 34;
-            layout.preferredHeight = 34;
-
-            var text = CreateText(buttonObject.transform, "Label", label, 15, FontStyle.Bold, 34);
-            text.alignment = TextAnchor.MiddleCenter;
+            var text = CreateText(buttonObject.transform, "Label", label, 15, FontStyle.Bold, 40, TextAnchor.MiddleCenter);
             text.raycastTarget = false;
             StretchRect(text.GetComponent<RectTransform>(), Vector2.zero, Vector2.zero);
             return button;
@@ -387,6 +507,51 @@ namespace KartGame.Multiplayer
             rectTransform.anchorMax = Vector2.one;
             rectTransform.offsetMin = offsetMin;
             rectTransform.offsetMax = offsetMax;
+        }
+
+        void EnsureEventSystem()
+        {
+            if (EventSystem.current != null || FindObjectOfType<EventSystem>() != null)
+                return;
+
+            var eventSystemObject = new GameObject("EventSystem");
+            eventSystemObject.AddComponent<EventSystem>();
+            eventSystemObject.AddComponent<StandaloneInputModule>();
+        }
+
+        void EnsureUiRootVisible()
+        {
+            if (m_UiRoot == null)
+                return;
+
+            if (!m_UiRoot.activeSelf)
+                m_UiRoot.SetActive(true);
+
+            var canvas = m_UiRoot.GetComponentInChildren<Canvas>(true);
+            if (canvas != null)
+                canvas.enabled = true;
+
+            var graphicRaycaster = m_UiRoot.GetComponentInChildren<GraphicRaycaster>(true);
+            if (graphicRaycaster != null)
+                graphicRaycaster.enabled = true;
+        }
+
+        T FindUiComponent<T>(string relativePath) where T : Component
+        {
+            if (m_UiRoot == null)
+                return null;
+
+            Transform target = m_UiRoot.transform.Find(relativePath);
+            return target != null ? target.GetComponent<T>() : null;
+        }
+
+        void RegisterButton(Button button, UnityEngine.Events.UnityAction callback)
+        {
+            if (button == null)
+                return;
+
+            button.onClick.RemoveListener(callback);
+            button.onClick.AddListener(callback);
         }
 
         void ApprovalCheck(NetworkManager.ConnectionApprovalRequest request, NetworkManager.ConnectionApprovalResponse response)

@@ -5,6 +5,8 @@ namespace KartGame.Multiplayer
 {
     public static class MultiplayerSceneEntry
     {
+        static bool s_IsCreatingBootstrap;
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         static void RegisterSceneHooks()
         {
@@ -21,11 +23,23 @@ namespace KartGame.Multiplayer
 
         static void EnsureBootstrapObject()
         {
+            if (s_IsCreatingBootstrap)
+                return;
+
             if (Object.FindObjectOfType<MainSceneMultiplayerBootstrap>() != null)
                 return;
 
-            var bootstrapObject = new GameObject("MainSceneMultiplayerBootstrap");
-            bootstrapObject.AddComponent<MainSceneMultiplayerBootstrap>();
+            s_IsCreatingBootstrap = true;
+
+            try
+            {
+                var bootstrapObject = new GameObject("MainSceneMultiplayerBootstrap");
+                bootstrapObject.AddComponent<MainSceneMultiplayerBootstrap>();
+            }
+            finally
+            {
+                s_IsCreatingBootstrap = false;
+            }
         }
     }
 }
