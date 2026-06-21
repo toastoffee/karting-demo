@@ -51,18 +51,11 @@ public class GameFlowManager : MonoBehaviour
     float m_TimeLoadEndGameScene;
     string m_SceneToLoad;
     float elapsedTimeBeforeEndScene = 0;
+    bool m_RaceStarted;
 
     void Start()
     {
-        if (autoFindKarts)
-        {
-            karts = FindObjectsOfType<ArcadeKart>();
-            if (karts.Length > 0)
-            {
-                if (!playerKart) playerKart = karts[0];
-            }
-            DebugUtility.HandleErrorIfNullFindObject<ArcadeKart, GameFlowManager>(playerKart, this);
-        }
+        RefreshKarts(playerKart);
 
         m_ObjectiveManager = FindObjectOfType<ObjectiveManager>();
 		DebugUtility.HandleErrorIfNullFindObject<ObjectiveManager, GameFlowManager>(m_ObjectiveManager, this);
@@ -76,10 +69,8 @@ public class GameFlowManager : MonoBehaviour
         loseDisplayMessage.gameObject.SetActive(false);
 
         m_TimeManager.StopRace();
-        foreach (ArcadeKart k in karts)
-        {
-			k.SetCanMove(false);
-        }
+        m_RaceStarted = false;
+        ApplyMovementStateToKarts(false);
 
         //run race countdown animation
         ShowRaceCountdownAnimation();
@@ -94,11 +85,39 @@ public class GameFlowManager : MonoBehaviour
     }
 
     void StartRace() {
-        foreach (ArcadeKart k in karts)
-        {
-			k.SetCanMove(true);
-        }
+        m_RaceStarted = true;
+        ApplyMovementStateToKarts(true);
         m_TimeManager.StartRace();
+    }
+
+    public void RefreshKarts(ArcadeKart preferredPlayerKart = null)
+    {
+        if (autoFindKarts)
+            karts = FindObjectsOfType<ArcadeKart>();
+
+        if (preferredPlayerKart != null)
+            playerKart = preferredPlayerKart;
+        else if ((playerKart == null || !playerKart.gameObject.activeInHierarchy) && karts != null && karts.Length > 0)
+            playerKart = karts[0];
+
+        if (playerKart != null)
+            DebugUtility.HandleErrorIfNullFindObject<ArcadeKart, GameFlowManager>(playerKart, this);
+
+        ApplyMovementStateToKarts(m_RaceStarted && gameState == GameState.Play);
+    }
+
+    void ApplyMovementStateToKarts(bool canMove)
+    {
+        if (karts == null)
+            return;
+
+        foreach (ArcadeKart kart in karts)
+        {
+            if (kart == null)
+                continue;
+
+			kart.SetCanMove(canMove);
+        }
     }
 
     void ShowRaceCountdownAnimation() {
@@ -175,6 +194,7 @@ public class GameFlowManager : MonoBehaviour
         Cursor.visible = true;
 
         m_TimeManager.StopRace();
+        m_RaceStarted = false;
 
         // Remember that we need to load the appropriate end scene after a delay
         gameState = win ? GameState.Won : GameState.Lost;

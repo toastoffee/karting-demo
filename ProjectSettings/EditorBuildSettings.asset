@@ -5,7 +5,7 @@ EditorBuildSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 2
   m_Scenes:
-  - enabled: 1
+  - enabled: 0
     path: Assets/Karting/Scenes/IntroMenu.unity
     guid: d29260d8d84c94bd7ac95807b3da99d4
   - enabled: 1
@@ -20,7 +20,7 @@ EditorBuildSettings:
   - enabled: 0
     path: Assets/Karting/Scenes/MLTraining/KartClassic_TrainingDemo.unity
     guid: 070d4c0e5ff8bf049a18ae57f752abf6
-  - enabled: 1
+  - enabled: 0
     path: Assets/Karting/Scenes/MLTraining/KartClassic_Training.unity
     guid: 4cd7f6ff2b746f24c87800ae8e1b28e9
   m_configObjects: {}

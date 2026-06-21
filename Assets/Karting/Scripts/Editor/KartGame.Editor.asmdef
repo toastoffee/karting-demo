@@ -1,7 +1,8 @@
 {
     "name": "KartGame.Editor",
     "references": [
-        "GUID:a54b96d5ddd2c488aadb7e2cb0921b9b"
+        "GUID:a54b96d5ddd2c488aadb7e2cb0921b9b",
+        "Unity.Burst"
     ],
     "includePlatforms": [
         "Editor"
